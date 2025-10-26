@@ -1,5 +1,5 @@
 import json
-from coinbase import websocket
+import websocket
 import threading
 import time
 
