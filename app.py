@@ -60,6 +60,7 @@ FONTS = {
 ##################
 
 app = dash.Dash(__name__)
+server = app.server
 app.title = "BTC-USD Visualizer"
 
 app.config.update_title = None
