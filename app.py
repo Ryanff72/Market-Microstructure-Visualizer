@@ -548,6 +548,8 @@ def start_websocket():
 )
 
 def update_metrics(n):
+    if not orderbook or orderbook.get_best_bid() is None:
+        return []
     metrics = orderbook.get_metrics()
     return [
         f"${metrics['best_bid']:,.2f}",
@@ -563,6 +565,8 @@ def update_metrics(n):
 )
 
 def update_orderbook_chart(n):
+    if not orderbook or orderbook.get_best_bid() is None:
+        return None
     if n % graph_interval != 0:
         raise dash.exceptions.PreventUpdate
     depth = orderbook.get_depth_snapshot(levels=15)
@@ -625,6 +629,8 @@ def update_orderbook_chart(n):
 )
 
 def update_spread_chart(n):
+    if not orderbook or orderbook.get_best_bid() is None:
+        return None
     if n % graph_interval != 0:
         raise dash.exceptions.PreventUpdate
     fig = go.Figure()
@@ -679,6 +685,8 @@ def update_spread_chart(n):
 )
 
 def update_imbalance_gauge(n):
+    if not orderbook or orderbook.get_best_bid() is None:
+        return None,None,None
     imbalance = orderbook.get_imbalance()
     if imbalance is None: imbalance = 0.5
     buy_percentage = imbalance * 100
@@ -722,6 +730,9 @@ def update_imbalance_gauge(n):
     ]
 )
 def handle_trading(buy_clicks, sell_clicks, n, amount):
+    # At the start of each callback
+    if not orderbook or orderbook.get_best_bid() is None:
+        return "", "", "", "", []
     global portfolio
     
     if amount is None or amount <= 0:
@@ -818,8 +829,8 @@ def handle_trading(buy_clicks, sell_clicks, n, amount):
 # Main
 ##################
 
+start_websocket()
 if __name__ == '__main__':
-	start_websocket()
 	app.run(debug=False, 
             dev_tools_hot_reload=False,
             dev_tools_ui=False,
