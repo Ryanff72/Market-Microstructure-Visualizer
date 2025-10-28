@@ -2,6 +2,7 @@ import dash
 from dash import dcc, html
 from dash.dependencies import Input, Output
 import numpy as np
+from datetime import datetime
 import plotly.graph_objs as go
 from websocket_client import CoinbaseWebSocket
 from order_book import OrderBook
@@ -16,7 +17,18 @@ ws_client = None
 #state for fast interpolation
 previous_metrics = {'best_bid': 0, 'best_ask': 0, 'spread': 0, 'mid_price': 0, 'imbalance': 0.5}
 target_metrics = {'best_bid': 0, 'best_ask': 0, 'spread': 0, 'mid_price': 0, 'imbalance': 0.5}
-interp_step = 0
+
+# track trades
+portfolio = {
+    'usd': 200000.0,
+    'btc': 0.0,
+    'transactions': []
+}
+#limit on how many trades we keep in memory
+transaction_history_limit = 100
+
+#how often graphs updated
+graph_interval = 2
 
 #method for interpolating vals (makes site look fast haha)
 def interpolate_value(old, new, steps=10, current_step = 0):
@@ -48,8 +60,9 @@ FONTS = {
 ##################
 
 app = dash.Dash(__name__)
-app.title = "BTC-USD Market Microstructure Visualizer"
+app.title = "BTC-USD Visualizer"
 
+app.config.update_title = None
 app.config.suppress_callback_exceptions = True
 
 ##################
@@ -68,10 +81,11 @@ app.index_string = '''
         <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
         
         <style>
-            ._dash-loading {
-                display: none !important;
+            ._dash-loading,
+            .dash-loading-callback,
+            .dash-spinner {
+                display: none !important; 
             }
-            
             ::-webkit-scrollbar {
                 width: 6px;
             }
@@ -237,7 +251,7 @@ app.layout = html.Div(style={
             dcc.Graph(
                 id='orderbook-chart',
                 config={'displayModeBar': False},
-                style={'height': '300px'}
+                style={'height': '200px'}
             )
         ], className='sleek-card', style={'flex': '1', 'marginRight': '16px'}),
 
@@ -251,7 +265,7 @@ app.layout = html.Div(style={
             dcc.Graph(
                 id='spread-chart',
                 config={'displayModeBar': False},
-                style={'height': '300px'}
+                style={'height': '200px'}
             )
         ], className='sleek-card', style={'flex': '1', 'marginLeft': '16px'}) 
         
@@ -263,7 +277,7 @@ app.layout = html.Div(style={
             'color': COLORS['text'], 
             'textAlign': 'center',
             'fontSize': '16px',
-            'marginBottom': '16px'
+            'marginBottom': '8px'
         }),
         html.Div([
             html.Div("Sell Pressure", style={
@@ -287,7 +301,7 @@ app.layout = html.Div(style={
         ], style={
             'display': 'flex',
             'justifyContent': 'space-between',
-            'marginBottom': '12px'
+            'marginBottom': '6px'
         }),
         html.Div([
             html.Div(id='imbalance-bar-sell', style={
@@ -311,12 +325,190 @@ app.layout = html.Div(style={
             'overflow': 'hidden',
         })
         
-    ], className='sleek-card', style={'marginBottom': '20px'}),
-
+    ], className='sleek-card', style={'marginBottom': '10px'}),
+    # trading sim
+    html.Div([
+        html.H3("Trade", style={
+            'color': COLORS['text'], 
+            'textAlign': 'center',
+            'fontSize': '24px',
+            'letterSpacing': '2px',
+            'marginBottom': '8px',
+            'fontWeight': '700'
+        }),
+        
+        # Portfolio Display - Sleek Cards
+        html.Div([
+            html.Div([
+                html.Div("Balance", style={'fontSize': '11px', 'color': COLORS['accent'], 'textTransform': 'uppercase', 'letterSpacing': '1px', 'marginBottom': '8px'}),
+                html.Div(id='portfolio-usd', children="$10,000.00", 
+                    style={'fontSize': '24px', 'color': COLORS['text'], 'fontWeight': '700'})
+            ], style={
+                'flex': '1', 
+                'textAlign': 'center',
+                'padding': '20px',
+                'backgroundColor': f"{COLORS['background']}40",
+                'borderRadius': '12px',
+                'border': f"1px solid {COLORS['grid']}30"
+            }),
+            html.Div([
+                html.Div("Holdings", style={'fontSize': '11px', 'color': COLORS['accent'], 'textTransform': 'uppercase', 'letterSpacing': '1px', 'marginBottom': '8px'}),
+                html.Div(id='portfolio-btc', children="0.0000 BTC", 
+                    style={'fontSize': '24px', 'color': COLORS['text'], 'fontWeight': '700'})
+            ], style={
+                'flex': '1', 
+                'textAlign': 'center',
+                'padding': '20px',
+                'backgroundColor': f"{COLORS['background']}40",
+                'borderRadius': '12px',
+                'border': f"1px solid {COLORS['grid']}30",
+                'margin': '0 12px'
+            }),
+            html.Div([
+                html.Div("Total Value", style={'fontSize': '11px', 'color': COLORS['accent'], 'textTransform': 'uppercase', 'letterSpacing': '1px', 'marginBottom': '8px'}),
+                html.Div(id='portfolio-total', children="$10,000.00", 
+                    style={'fontSize': '24px', 'color': COLORS['bid_green'], 'fontWeight': '700'})
+            ], style={
+                'flex': '1', 
+                'textAlign': 'center',
+                'padding': '20px',
+                'backgroundColor': f"{COLORS['background']}40",
+                'borderRadius': '12px',
+                'border': f"1px solid {COLORS['grid']}30"
+            }),
+        ], style={'display': 'flex', 'marginBottom': '25px'}),
+        
+        # Main Trading Area - Two Columns
+        html.Div([
+            # Left Column - Trading Controls
+            html.Div([
+                html.Label("Amount (BTC)", style={
+                    'color': COLORS['text'], 
+                    'marginBottom': '12px', 
+                    'display': 'block',
+                    'fontSize': '13px',
+                    'fontWeight': '600',
+                    'textTransform': 'uppercase',
+                    'letterSpacing': '1px'
+                }),
+                dcc.Input(
+                    id='trade-amount',
+                    type='number',
+                    value=0.01,
+                    min=0.0001,
+                    step=0.0001,
+                    style={
+                        'width': '90%',
+                        'padding': '16px',
+                        'backgroundColor': f"{COLORS['background']}60",
+                        'color': COLORS['text'],
+                        'border': f'1px solid {COLORS["text"]}50',
+                        'borderRadius': '6px',
+                        'fontFamily': FONTS['body'],
+                        'fontSize': '16px',
+                        'fontWeight': '600',
+                        'marginBottom': '16px',
+                        'transition': 'all 0.3s ease'
+                    }
+                ),
+                
+                # Buy button with animation
+                html.Button('Buy', id='buy-button', n_clicks=0, 
+                    className='trade-button trade-buy-button',
+                    style={
+                        'width': '100%',
+                        'padding': '18px',
+                        'backgroundColor': COLORS['bid_green'],
+                        'color': 'white',
+                        'border': 'none',
+                        'borderRadius': '6px',
+                        'fontSize': '16px',
+                        'fontWeight': '700',
+                        'cursor': 'pointer',
+                        'marginBottom': '12px',
+                        'textTransform': 'uppercase',
+                        'letterSpacing': '1.5px',
+                        'transition': 'all 0.2s ease',
+                        'boxShadow': f"0 4px 12px {COLORS['bid_green']}40"
+                    }
+                ),
+                
+                # Sell button with animation
+                html.Button('Sell', id='sell-button', n_clicks=0,
+                    className='trade-button trade-sell-button',
+                    style={
+                        'width': '100%',
+                        'padding': '18px',
+                        'backgroundColor': COLORS['ask_red'],
+                        'color': 'white',
+                        'border': 'none',
+                        'borderRadius': '6px',
+                        'fontSize': '16px',
+                        'fontWeight': '700',
+                        'cursor': 'pointer',
+                        'textTransform': 'uppercase',
+                        'letterSpacing': '1.5px',
+                        'transition': 'all 0.2s ease',
+                        'boxShadow': f"0 4px 12px {COLORS['ask_red']}40"
+                    }
+                ),
+                
+                # Transaction feedback
+                html.Div(id='trade-feedback', style={
+                    'textAlign': 'center',
+                    'color': COLORS['accent'],
+                    'fontSize': '13px',
+                    'minHeight': '20px',
+                    'marginTop': '16px',
+                    'fontWeight': '500'
+                })
+            ], style={
+                'flex': '0 0 300px',
+                'marginRight': '25px'
+            }),
+            
+            # Right Column - Transaction History
+            html.Div([
+                html.Div("Recent Trades", style={
+                    'fontSize': '14px',
+                    'fontWeight': '700',
+                    'color': COLORS['text'],
+                    'marginBottom': '16px',
+                    'textTransform': 'uppercase',
+                    'letterSpacing': '1.5px'
+                }),
+                html.Div(id='transaction-history', children=[
+                    html.Div("No trades yet", style={
+                        'color': COLORS['accent'],
+                        'textAlign': 'center',
+                        'padding': '40px 20px',
+                        'fontSize': '13px',
+                        'opacity': '0.6'
+                    })
+                ], style={
+                    'maxHeight': '280px',
+                    'overflowY': 'auto',
+                    'overflowX': 'hidden'
+                })
+            ], style={
+                'flex': '1',
+                'backgroundColor': f"{COLORS['background']}40",
+                'padding': '20px',
+                'borderRadius': '12px',
+                'border': f"1px solid {COLORS['grid']}30"
+            })
+        ], style={'display': 'flex', 'alignItems': 'stretch'})
+    ], style={
+        'backgroundColor': COLORS['card_bg'],
+        'padding': '30px',
+        'borderRadius': '16px',
+        'marginBottom': '20px',
+        'boxShadow': '0 8px 32px rgba(0,0,0,0.2)'
+    }),
     # Interval component (keep as-is)
     dcc.Interval(
         id='interval-component',
-        interval=250,
+        interval=500,
         n_intervals=0
     ),
 ])
@@ -370,7 +562,7 @@ def update_metrics(n):
 )
 
 def update_orderbook_chart(n):
-    if n % 5 != 0:
+    if n % graph_interval != 0:
         raise dash.exceptions.PreventUpdate
     depth = orderbook.get_depth_snapshot(levels=15)
     bid_prices = [price for price, size in depth['bids']]
@@ -432,7 +624,7 @@ def update_orderbook_chart(n):
 )
 
 def update_spread_chart(n):
-    if n % 5 != 0:
+    if n % graph_interval != 0:
         raise dash.exceptions.PreventUpdate
     fig = go.Figure()
     orderbook.update_history()
@@ -510,10 +702,127 @@ def update_imbalance_gauge(n):
 
     return gauge_text, sell_style, buy_style
 
+# paper trading
+@app.callback(
+    [
+        Output('portfolio-usd', 'children'),
+        Output('portfolio-btc', 'children'),
+        Output('portfolio-total', 'children'),
+        Output('trade-feedback', 'children'),
+        Output('transaction-history', 'children'),
+    ],
+    [
+        Input('buy-button', 'n_clicks'),
+        Input('sell-button', 'n_clicks'),
+        Input('interval-component', 'n_intervals'),
+    ],
+    [
+        dash.dependencies.State('trade-amount', 'value')
+    ]
+)
+def handle_trading(buy_clicks, sell_clicks, n, amount):
+    global portfolio
+    
+    if amount is None or amount <= 0:
+        amount = 0.01
+
+    best_ask = orderbook.get_best_ask()
+    if best_ask is None:
+        best_ask = 0
+    
+    ctx = dash.callback_context
+    feedback = ""
+
+    
+    if ctx.triggered:
+        button_id = ctx.triggered[0]['prop_id'].split('.')[0]
+        
+        if button_id == 'buy-button' and buy_clicks > 0:
+            cost = amount * best_ask
+            
+            # Check if we have enough USD
+            if portfolio['usd'] >= cost - 0.00001:
+                portfolio['usd'] -= cost
+                portfolio['btc'] += amount
+                feedback = f"Bought {amount} BTC at ${best_ask:,.2f}"
+                portfolio['transactions'].insert(0, {
+                    'type': 'buy',
+                    'amount': amount,
+                    'price': best_ask,
+                    'total': cost,
+                    'timestamp': datetime.now().strftime('%H:%M:%S')
+                })
+                portfolio['transactions'] = portfolio['transactions'][:transaction_history_limit]
+            else:
+                feedback = f"Insufficient USD (need ${cost:,.2f})"
+        
+        elif button_id == 'sell-button' and sell_clicks > 0:
+            # Check if we have enough BTC
+            if portfolio['btc'] >= amount - 0.00001:
+                revenue = amount * best_ask
+                portfolio['btc'] -= amount
+                portfolio['usd'] += (amount * best_ask)
+                feedback = f"Sold {amount} BTC at ${best_ask:,.2f}"
+                portfolio['transactions'].insert(0, {
+                    'type': 'sell',
+                    'amount': amount,
+                    'price': best_ask,
+                    'total': revenue,
+                    'timestamp': datetime.now().strftime('%H:%M:%S')
+                })
+                portfolio['transactions'] = portfolio['transactions'][:transaction_history_limit]
+            else:
+                feedback = f"Insufficient BTC (have {portfolio['btc']:.4f})"
+    portfolio['usd'] = abs(portfolio['usd'])
+    portfolio['btc'] = abs(portfolio['btc'])
+    total_value = portfolio['usd'] + (portfolio['btc'] * best_ask)
+    
+    usd_display = f"${portfolio['usd']:,.2f}"
+    btc_display = f"{portfolio['btc']:.4f} BTC"
+    total_display = f"${total_value:,.2f}"
+    if portfolio['transactions']:
+        transaction_items = []
+        for tx in portfolio['transactions']:
+            trade_class = 'trade-item trade-buy' if tx['type'] == 'buy' else 'trade-item trade-sell'
+            transaction_items.append(
+                html.Div([
+                    html.Div([
+                        html.Span(tx['type'].upper(), style={
+                            'fontWeight': '700',
+                            'color': COLORS['bid_green'] if tx['type'] == 'buy' else COLORS['ask_red'],
+                            'marginRight': '8px'
+                        }),
+                        html.Span(f"{tx['amount']:.4f} BTC", style={'color': COLORS['text']}),
+                    ]),
+                    html.Div([
+                        html.Div(f"${tx['price']:,.2f}", style={'color': COLORS['text'], 'fontWeight': '600'}),
+                        html.Div(tx['timestamp'], style={'fontSize': '11px', 'color': COLORS['accent'], 'marginTop': '2px'}),
+                    ], style={'textAlign': 'right'})
+                ], className=trade_class)
+            )
+        transaction_history = transaction_items
+    else:
+        transaction_history = [
+            html.Div("No trades yet", style={
+                'color': COLORS['accent'],
+                'textAlign': 'center',
+                'padding': '40px 20px',
+                'fontSize': '13px',
+                'opacity': '0.6'
+            })
+        ]
+    
+    return usd_display, btc_display, total_display, feedback, transaction_history
 ##################
 # Main
 ##################
 
 if __name__ == '__main__':
 	start_websocket()
-	app.run(debug=True, host='0.0.0.0', port=8050)
+	app.run(debug=False, 
+            dev_tools_hot_reload=False,
+            dev_tools_ui=False,
+            dev_tools_props_check=False,
+            dev_tools_serve_dev_bundles=False,
+            host='0.0.0.0', 
+            port=8050)
