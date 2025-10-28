@@ -741,6 +741,10 @@ def handle_trading(buy_clicks, sell_clicks, n, amount):
     best_ask = orderbook.get_best_ask()
     if best_ask is None:
         best_ask = 0
+
+    best_bid = orderbook.get_best_bid()
+    if best_bid is None:
+        best_bid = 0
     
     ctx = dash.callback_context
     feedback = ""
@@ -771,14 +775,14 @@ def handle_trading(buy_clicks, sell_clicks, n, amount):
         elif button_id == 'sell-button' and sell_clicks > 0:
             # Check if we have enough BTC
             if portfolio['btc'] >= amount - 0.00001:
-                revenue = amount * best_ask
+                revenue = amount * best_bid
                 portfolio['btc'] -= amount
-                portfolio['usd'] += (amount * best_ask)
-                feedback = f"Sold {amount} BTC at ${best_ask:,.2f}"
+                portfolio['usd'] += (amount * best_bid)
+                feedback = f"Sold {amount} BTC at ${best_bid:,.2f}"
                 portfolio['transactions'].insert(0, {
                     'type': 'sell',
                     'amount': amount,
-                    'price': best_ask,
+                    'price': best_bid,
                     'total': revenue,
                     'timestamp': datetime.now().strftime('%H:%M:%S')
                 })
